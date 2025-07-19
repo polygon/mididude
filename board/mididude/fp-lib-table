@@ -1,0 +1,5 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "MCU_ch32v003_Board")(type "KiCad")(uri "${KIPRJMOD}/MCU_ch32v003_Board.pretty")(options "")(descr ""))
+  (lib (name "Endless_potentiometer")(type "KiCad")(uri "${KIPRJMOD}/Endless_potentiometer.pretty")(options "")(descr ""))
+)

@@ -1,0 +1,28 @@
+**/*.rs.bk
+.#*
+.gdb_history
+target/
+playground/
+
+# editor files
+.vscode/*
+!.vscode/*.md
+!.vscode/*.svd
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Nix
+.direnv
+result
+
+# Vim
+*.swp
+
+# Board
+board/mididude/fp-info-cache
+board/mididude/Pico.wrl
+board/mididude/fab
+board/mididude/mididude-backups
+board/mididude/~*
