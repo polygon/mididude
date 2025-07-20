@@ -15,11 +15,6 @@ use hal::usart::UartTx;
 
 use mididude_adc::i2c_device::{Command, Config, I2cSlave};
 
-bind_interrupts!(struct Irqs {
-    I2C1_EV => mididude_adc::i2c_device::EventInterruptHandler<ch32_hal::peripherals::I2C1>;
-    I2C1_ER => mididude_adc::i2c_device::ErrorInterruptHandler<ch32_hal::peripherals::I2C1>;
-});
-
 struct InfPoti {
     in0: AnyAdcChannel<ADC1>,
     in1: AnyAdcChannel<ADC1>,
@@ -55,8 +50,8 @@ impl Converter {
         let p1 = val / 2;
         let p2 = 1024 - p1;
         return (
-            (p1 + offset).rem_euclid(1024),
-            (p2 + offset).rem_euclid(1024),
+            (p1 + offset).rem_euclid(1025),
+            (p2 + offset).rem_euclid(1025),
         );
     }
 
@@ -160,7 +155,7 @@ fn main() -> ! {
     config.addr = 0x10;
     config.general_call = false;
 
-    let i2c = I2cSlave::new(p.I2C1, config, p.PC1, p.PC2, Irqs);
+    let i2c = I2cSlave::new(p.I2C1, config, p.PC1, p.PC2);
 
     let mut adc = hal::adc::Adc::new(p.ADC1, Default::default());
 

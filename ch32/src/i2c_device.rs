@@ -3,42 +3,6 @@ use ch32_hal::Peripheral;
 use ch32_hal::{interrupt, peripherals};
 use core::marker::PhantomData;
 use core::task::Poll;
-use embassy_sync::waitqueue::AtomicWaker;
-
-/// Event interrupt handler.
-pub struct EventInterruptHandler<T: Instance> {
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Instance> interrupt::typelevel::Handler<T::EventInterrupt> for EventInterruptHandler<T> {
-    unsafe fn on_interrupt() {
-        on_interrupt::<T>()
-    }
-}
-
-/// Error interrupt handler.
-pub struct ErrorInterruptHandler<T: Instance> {
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Instance> interrupt::typelevel::Handler<T::ErrorInterrupt> for ErrorInterruptHandler<T> {
-    unsafe fn on_interrupt() {
-        on_interrupt::<T>()
-    }
-}
-
-pub unsafe fn on_interrupt<T: Instance>() {
-    // i2c v2 only woke the task on transfer complete interrupts. v1 uses interrupts for a bunch of
-    // other stuff, so we wake the task on every interrupt.
-    critical_section::with(|_| {
-        T::state().waker.wake();
-        // Clear event interrupt flag.
-        T::regs().ctlr2().modify(|w| {
-            w.set_iterren(false);
-            w.set_itevten(false);
-        });
-    });
-}
 
 // I2C error
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -138,9 +102,6 @@ impl<'d, T: Instance> I2cSlave<'d, T> {
         config: Config,
         sda_pin: impl SdaPin<T, REMAP>,
         scl_pin: impl SclPin<T, REMAP>,
-        _irq: impl interrupt::typelevel::Binding<T::EventInterrupt, EventInterruptHandler<T>>
-            + interrupt::typelevel::Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
-            + 'd,
     ) -> Self {
         assert!(config.addr != 0);
 
@@ -389,32 +350,13 @@ impl<'d, T: Instance> I2cSlave<'d, T> {
     }
 }
 
-struct State {
-    #[allow(unused)]
-    waker: AtomicWaker,
-}
-
-impl State {
-    const fn new() -> Self {
-        Self {
-            waker: AtomicWaker::new(),
-        }
-    }
-}
-
 trait SealedInstance: ch32_hal::RccPeripheral + ch32_hal::RemapPeripheral {
     fn regs() -> ch32_hal::pac::i2c::I2c;
-    fn state() -> &'static State;
 }
 
 impl SealedInstance for peripherals::I2C1 {
     fn regs() -> ch32_hal::pac::i2c::I2c {
         ch32_hal::pac::I2C1
-    }
-
-    fn state() -> &'static State {
-        static STATE: State = State::new();
-        &STATE
     }
 }
 

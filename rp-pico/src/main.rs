@@ -92,6 +92,7 @@ struct Parameter {
     range: i32,
     i_min: i32,
     i_max: i32,
+    midi_update_hi: i32,
     pub cc: ControlFunction,
     pub channel: Channel,
 }
@@ -103,6 +104,7 @@ impl Parameter {
             range: 1024,
             i_min: 0,
             i_max: 1024,
+            midi_update_hi: 0,
             cc,
             channel,
         }
@@ -116,6 +118,16 @@ impl Parameter {
 
     pub fn set_value(&mut self, param_val: i32) {
         self.recalculate_limits(param_val);
+    }
+
+    pub fn set_value_part(&mut self, val: i8, lo: bool) {
+        if !lo {
+            self.midi_update_hi = val as i32;
+        } else {
+            let value = val as i32 + self.midi_update_hi * 128;
+            self.set_value(value);
+        }
+
     }
 
     pub fn update(&mut self, knob_val: i32) {
@@ -143,6 +155,10 @@ impl Format for Parameter {
     }
 }
 
+#[derive(Clone)]
+struct OutputLimiter {
+}
+
 #[entry]
 fn main() -> ! {
     info!("Program start");
@@ -166,6 +182,7 @@ fn main() -> ! {
     .unwrap();
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     // Set up the USB driver
     let usb_bus = UsbBusAllocator::new(usb::UsbBus::new(
@@ -210,7 +227,7 @@ fn main() -> ! {
         pac.I2C0,
         pins.gpio20.reconfigure(),
         pins.gpio21.reconfigure(),
-        HertzU32::kHz(250),
+        HertzU32::kHz(400),
         &mut pac.RESETS,
         &clocks.system_clock,
     );
@@ -218,7 +235,7 @@ fn main() -> ! {
         pac.I2C1,
         pins.gpio18.reconfigure(),
         pins.gpio19.reconfigure(),
-        HertzU32::kHz(250),
+        HertzU32::kHz(400),
         &mut pac.RESETS,
         &clocks.system_clock,
     );
@@ -235,7 +252,6 @@ fn main() -> ! {
     let mut buf1 = [0; 8];
     let mut warmup = 0;
     loop {
-        info!("I2C Read");
         match (
             i2c0.read(0x10 as u8, &mut buf0),
             i2c1.read(0x10 as u8, &mut buf1),
@@ -255,9 +271,11 @@ fn main() -> ! {
         knobs.push(KnobTracker::new(val, false));
     }
     // TODO: Evil hack for build issue :)
-    knobs[2].invert = true;
+    for mut knob in knobs.iter_mut() {
+        knob.invert = true;
+    }
 
-    let order = [4 as usize, 5, 0, 1, 7, 6, 3, 2];
+    let order: [usize; 8] = [4, 6, 0, 2, 5, 7, 1, 3];
 
     let mut params: ArrayVec<Parameter, 8> = ArrayVec::new();
     let mut valss: ArrayVec<i32, 8> = ArrayVec::new();
@@ -290,14 +308,15 @@ fn main() -> ! {
                             Ok(msg) => {
                                 let msg = Message::try_from(&msg).unwrap();
                                 match msg {
-                                    /* Message::ControlChange(ch, func, val) => {
-                                        info!(
-                                            "CC: {}, {}, {}",
-                                            ch as u8,
-                                            u8::from(func.0),
-                                            u8::from(val)
-                                        );
-                                    }*/
+                                    Message::ControlChange(ch, func, val) => {
+                                        let cc: u8 = func.0.into();
+                                        let channel: i8 = (cc % 32) as i8 - 9;
+                                        let lo = cc > 32;
+                                        if (channel >= 0) && (channel < 8) {
+                                            let val: u8 = val.into();
+                                            params[channel as usize].set_value_part(val as i8, lo);
+                                        }
+                                    }
                                     _ => (),
                                 };
                             }
@@ -323,7 +342,7 @@ fn main() -> ! {
         };
         //info!("vals: {:05}", valss[..]);
         //info!("knbs: {:05}", knobs[..]);
-        info!("prms: {:05}", params[..]);
+        //info!("prms: {:05}", params[..]);
         for param in params.iter() {
             let cc_hi = param.cc.clone();
             let cc_lo = ControlFunction(U7::from_clamped(u8::from(cc_hi.clone().0) + 32));

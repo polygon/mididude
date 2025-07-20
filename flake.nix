@@ -16,6 +16,12 @@
             pkgs.kicad-small
           ];
         };
+        native = pkgs.mkShell {
+          buildInputs = [
+            pkgs.rust-bin.nightly.latest.default
+            pkgs.rustfmt
+          ];
+        };
         rp-pico = pkgs.mkShell {
           buildInputs = [
             (pkgs.rust-bin.selectLatestNightlyWith (toolchain:
