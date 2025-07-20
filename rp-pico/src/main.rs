@@ -18,8 +18,9 @@ use usb_device::{class_prelude::*, prelude::*};
 use rp_pico::{
     self as bsp,
     hal::{
-        fugit::HertzU32,
+        fugit::{Duration, ExtU64, HertzU32},
         gpio::{bank0::Gpio26, FunctionSio, PullNone, SioInput},
+        timer::Instant,
     },
 };
 // use sparkfun_pro_micro_rp2040 as bsp;
@@ -120,16 +121,6 @@ impl Parameter {
         self.recalculate_limits(param_val);
     }
 
-    pub fn set_value_part(&mut self, val: i8, lo: bool) {
-        if !lo {
-            self.midi_update_hi = val as i32;
-        } else {
-            let value = val as i32 + self.midi_update_hi * 128;
-            self.set_value(value);
-        }
-
-    }
-
     pub fn update(&mut self, knob_val: i32) {
         self.last_knob_val = knob_val;
         if knob_val < self.i_min {
@@ -157,6 +148,80 @@ impl Format for Parameter {
 
 #[derive(Clone)]
 struct OutputLimiter {
+    last_value: i32,
+    last_seen: Instant,
+    pld_value: i32,
+    pld_time: Instant,
+    small_change_time: Duration<u64, 1, 1000000>,
+    large_change_range: i32,
+    remote_update_backoff: Duration<u64, 1, 1000000>,
+    remote_update: Option<i32>,
+    remote_update_hi: i32,
+}
+
+impl Default for OutputLimiter {
+    fn default() -> Self {
+        Self {
+            last_value: 0,
+            last_seen: Instant::from_ticks(0),
+            pld_value: 0,
+            pld_time: Instant::from_ticks(0),
+            small_change_time: 10.millis(),
+            large_change_range: 128,
+            remote_update_backoff: 100.millis(),
+            remote_update_hi: 0,
+            remote_update: None,
+        }
+    }
+}
+
+impl OutputLimiter {
+    pub fn process(&mut self, value: i32, time: Instant) -> Option<i32> {
+        if (value - self.pld_value).abs() >= self.large_change_range {
+            // Large change, immediately output
+            self.last_value = value;
+            self.last_seen = time;
+            self.pld_value = value;
+            self.pld_time = time;
+
+            Some(value)
+        } else if (time - self.pld_time) < self.remote_update_backoff {
+            // Still in backoff time, immediately output but don't update pld fields
+            self.last_value = value;
+            self.last_seen = time;
+            Some(value)
+        } else {
+            if value == self.last_value {
+                // Same small value we've seen before, update last_seen, do not output
+                self.last_seen = time;
+                None
+            } else if (time - self.last_seen) > self.small_change_time {
+                // Small change visible long enough, update and output, do not update pld
+                self.last_value = value;
+                self.last_seen = time;
+                Some(value)
+            } else {
+                // Small change but not visible long enough, do not update anything or output
+                None
+            }
+        }
+    }
+
+    pub fn remote_update(&mut self, time: Instant) -> Option<i32> {
+        if time - self.pld_time > self.remote_update_backoff {
+            self.remote_update.take()
+        } else {
+            None
+        }
+    }
+
+    pub fn set_value_part(&mut self, val: i8, lo: bool) {
+        if !lo {
+            self.remote_update_hi = val as i32;
+        } else {
+            self.remote_update = Some(val as i32 + self.remote_update_hi * 128);
+        }
+    }
 }
 
 #[entry]
@@ -240,14 +305,6 @@ fn main() -> ! {
         &clocks.system_clock,
     );
 
-    let mut pwm_slices = pwm::Slices::new(pac.PWM, &mut pac.RESETS);
-    let pwm = &mut pwm_slices.pwm4;
-    pwm.set_ph_correct();
-    pwm.enable();
-
-    let channel = &mut pwm.channel_b;
-    channel.output_to(pins.led);
-
     let mut buf0 = [0; 8];
     let mut buf1 = [0; 8];
     let mut warmup = 0;
@@ -267,28 +324,26 @@ fn main() -> ! {
     let mut it = buf0.chunks(2).chain(buf1.chunks(2));
     let mut vals = it.map(|chunk| (chunk[0] as u16) + ((chunk[1] as u16) << 8));
     let mut knobs: ArrayVec<KnobTracker, 8> = ArrayVec::new();
+    let mut limiters: ArrayVec<OutputLimiter, 8> = ArrayVec::new();
     for val in vals.take(8) {
-        knobs.push(KnobTracker::new(val, false));
-    }
-    // TODO: Evil hack for build issue :)
-    for mut knob in knobs.iter_mut() {
-        knob.invert = true;
+        knobs.push(KnobTracker::new(val, true));
     }
 
     let order: [usize; 8] = [4, 6, 0, 2, 5, 7, 1, 3];
 
     let mut params: ArrayVec<Parameter, 8> = ArrayVec::new();
-    let mut valss: ArrayVec<i32, 8> = ArrayVec::new();
-    for (idx, knob) in knobs.iter().enumerate() {
+    let mut raw_vals: ArrayVec<i32, 8> = ArrayVec::new();
+    for (idx, _knob) in knobs.iter().enumerate() {
         params.push(Parameter::new(
             ControlFunction(U7::from_clamped(9 + idx as u8)),
             Channel::Channel5,
         ));
-        valss.push(0);
+        raw_vals.push(0);
         params
             .last_mut()
             .unwrap()
             .connect_knob(knobs[order[idx]].value());
+        limiters.push(OutputLimiter::default());
     }
 
     let mut queue: ArrayVec<Message, 16> = ArrayVec::new();
@@ -314,7 +369,8 @@ fn main() -> ! {
                                         let lo = cc > 32;
                                         if (channel >= 0) && (channel < 8) {
                                             let val: u8 = val.into();
-                                            params[channel as usize].set_value_part(val as i8, lo);
+                                            limiters[channel as usize]
+                                                .set_value_part(val as i8, lo);
                                         }
                                     }
                                     _ => (),
@@ -332,33 +388,37 @@ fn main() -> ! {
             i2c0.read(0x10 as u8, &mut buf0),
             i2c1.read(0x10 as u8, &mut buf1),
         ) {
+            let now = timer.get_counter();
             let it = buf0.chunks(2).chain(buf1.chunks(2));
             let vals = it.map(|chunk| (chunk[0] as u16) + ((chunk[1] as u16) << 8));
             for (i, val) in vals.enumerate() {
-                valss[i] = val as i32;
+                raw_vals[i] = val as i32;
                 knobs[i].update(val);
                 params[i].update(knobs[order[i]].value());
+                let result = limiters[i].process(params[i].value(), now);
+                if let Some(value) = limiters[i].remote_update(now) {
+                    params[i].set_value(value);
+                } else if let Some(value) = result {
+                    let cc_hi = params[i].cc.clone();
+                    let cc_lo = ControlFunction(U7::from_clamped(u8::from(cc_hi.clone().0) + 32));
+                    let msg_hi = Message::ControlChange(
+                        params[i].channel,
+                        cc_hi,
+                        U7::from_clamped((value >> 7) as u8),
+                    );
+                    let msg_lo = Message::ControlChange(
+                        params[i].channel,
+                        cc_lo,
+                        U7::from_clamped((value & 0x7f) as u8),
+                    );
+                    queue.push(msg_hi);
+                    queue.push(msg_lo);
+                }
             }
         };
         //info!("vals: {:05}", valss[..]);
         //info!("knbs: {:05}", knobs[..]);
         //info!("prms: {:05}", params[..]);
-        for param in params.iter() {
-            let cc_hi = param.cc.clone();
-            let cc_lo = ControlFunction(U7::from_clamped(u8::from(cc_hi.clone().0) + 32));
-            let msg_hi = Message::ControlChange(
-                param.channel,
-                cc_hi,
-                U7::from_clamped((param.value() >> 7) as u8),
-            );
-            let msg_lo = Message::ControlChange(
-                param.channel,
-                cc_lo,
-                U7::from_clamped((param.value() & 0x7f) as u8),
-            );
-            queue.push(msg_hi);
-            queue.push(msg_lo);
-        }
 
         //info!("{:?}, {:?}", buf0, buf1);
 
