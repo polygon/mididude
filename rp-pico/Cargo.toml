@@ -26,7 +26,7 @@ arrayvec = { version = "0.7.6", default_features = false}
 # rp2040-hal = { version="0.10", features=["rt", "critical-section-impl"] }
 # rp2040-boot2 = "0.3"
 
-usb-device = "0.3.2"
+usb-device = { version = "0.3.2" }
 
 # cargo build/run
 [profile.dev]

@@ -349,11 +349,15 @@ fn main() -> ! {
     let mut queue: ArrayVec<Message, 16> = ArrayVec::new();
 
     loop {
-        usb_dev.poll(&mut [&mut midi]);
-
         for msg in queue.into_iter() {
-            midi.send_packet(msg.into_packet(usbd_midi::CableNumber::Cable0))
-                .unwrap_or(0);
+            let packet = msg.into_packet(usbd_midi::CableNumber::Cable0);
+            for _ in 0..10 {
+                let res = midi.send_packet(packet.clone());
+                match res {
+                    Err(UsbError::WouldBlock) => (),
+                    _ => break
+                };
+            }
 
             while usb_dev.poll(&mut [&mut midi]) {
                 let mut buffer = [0; 64];
@@ -384,6 +388,7 @@ fn main() -> ! {
                 }
             }
         }
+        usb_dev.poll(&mut [&mut midi]);
         queue = ArrayVec::new();
 
         if let (Ok(_), Ok(_)) = (
