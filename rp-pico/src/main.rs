@@ -349,6 +349,8 @@ fn main() -> ! {
     let mut queue: ArrayVec<Message, 16> = ArrayVec::new();
 
     loop {
+        usb_dev.poll(&mut [&mut midi]);
+
         for msg in queue.into_iter() {
             midi.send_packet(msg.into_packet(usbd_midi::CableNumber::Cable0))
                 .unwrap_or(0);
